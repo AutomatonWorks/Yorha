@@ -220,6 +220,8 @@ def RelaunchOverlapped(argv: list[str]) -> None:
     """Starts `argv` (interpreter first) right away; the caller exits right after."""
     env = dict(os.environ)
     env[WAIT_FOR_PID_ENV] = str(os.getpid())
+    # a onefile exe would otherwise reuse this process's unpack folder, which is deleted when this one exits
+    env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
     subprocess.Popen(argv, env=env)
 
 
