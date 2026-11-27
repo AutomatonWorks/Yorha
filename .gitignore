@@ -1,0 +1,22 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+# game data files (accounts and logins, settings, saves, logs) never go in the repo; test fixtures are fake data
+*.ini
+*.conf
+*.sav
+*.bak
+*.log
+.logs/
+logs/
+Locks.json
+*.manifest.json
+!/tests/**/*.ini
+tests/_preview/
+# internal tools stay out of the repo
+.tools/
+# setuptools build output
+build/
+*.egg-info/

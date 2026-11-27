@@ -1,0 +1,63 @@
+[project]
+name = "yorha"
+version = "0.1.0"
+description = "AHK-style desktop automation: keyboard and mouse input, hotkeys, timers, windows, processes, tooltips"
+requires-python = ">=3.14"
+dependencies = [
+    "PySide6>=6.11.2",
+    "pywin32>=306; sys_platform == 'win32'",
+]
+
+[build-system]
+requires = ["setuptools>=80"]
+build-backend = "setuptools.build_meta"
+
+[dependency-groups]
+dev = [
+    "complexipy>=9.0.0",
+    "pytest>=8",
+    "ruff>=0.8",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--import-mode=importlib"
+
+[tool.ruff]
+line-length = 120
+target-version = "py314"
+
+[tool.ruff.lint.isort]
+# src/ is mapped to the package name, so ruff cannot find our packages on its own
+known-first-party = ["automaton_commons", "automaton_gui", "yorha", "zzz_automaton"]
+
+# Names follow the AHK source: PascalCase classes, functions and methods, camelCase variables,
+# parameters and attributes, UPPER_CASE constants. Methods overriding a library one (Qt's paintEvent) are not checked.
+[tool.pylint.basic]
+# AHK names may carry underscores between parts (Team_YSG_M0, Lang_en, Team__Buffs) and a trailing one (Def_)
+class-rgx = "^(_*[A-Z][a-zA-Z0-9]*(_+[A-Za-z0-9]+)*|_*[A-Z][A-Z0-9_]*)$"
+function-rgx = "^(_*[A-Z0-9][a-zA-Z0-9]*(_+[A-Za-z0-9]+)*_?|test_[A-Z][a-zA-Z0-9]*|pytest_\\w+|__\\w+__)$"
+# lower camelCase: Qt overrides (paintEvent, keyPressEvent), which Pylint cannot see through PySide
+method-rgx = "^(_*[A-Z][a-zA-Z0-9]*_?|[a-z]+[A-Z][a-zA-Z0-9]*|test_[A-Z][a-zA-Z0-9]*|__\\w+__)$"
+attr-rgx = "^(_*[a-z][a-zA-Z0-9]*_?|_*[A-Z][A-Z0-9_]*)$"
+argument-rgx = "^_*[a-z][a-zA-Z0-9]*_?$"
+variable-rgx = "^(_*[a-z][a-zA-Z0-9]*_?|_*[A-Z][A-Z0-9_]*)$"
+inlinevar-rgx = "^_*[a-z][a-zA-Z0-9]*_?$"
+const-rgx = "^(_*[A-Z0-9][A-Z0-9_]*|_*[a-z][a-zA-Z0-9]*|_*[A-Z][a-zA-Z0-9]*(_+[A-Za-z0-9]+)*|__\\w+__)$"
+class-attribute-rgx = "^(_*[A-Z][A-Z0-9_]*|_*[a-z][a-zA-Z0-9]*|_*[A-Z][a-zA-Z0-9]*|__\\w+__)$"
+class-const-rgx = "^(_*[A-Z][A-Z0-9_]*|_*[a-z][a-zA-Z0-9]*|_*[A-Z][a-zA-Z0-9]*)$"
+module-rgx = "^(_*[A-Z][a-zA-Z0-9]*(_+[A-Za-z0-9]+)*|__init__|__main__|conftest|test_[A-Z][a-zA-Z0-9]*)$"
+good-names = ["_", "tmp_path", "tmp_path_factory", "monkeypatch", "capsys", "capfd", "caplog", "request", "qapp", "qtbot",
+    "_fields_", "_pack_", "_anonymous_",
+    # package folders keep the AHK folder names
+    "automaton_commons", "automaton_gui", "battle", "compendium_tabs", "dailies", "framework", "gui", "hollow_zero",
+    "i18n", "ipc", "keyhints", "login", "preview", "screen", "screens", "stage_select", "suites", "theme", "types",
+    "ui_navigation", "utils", "zzz_automaton",
+    # methods that override a library one somewhere keep its name in every class
+    "count", "paint", "event", "value", "data", "flags", "geometry",
+    # AHK spellings
+    "CompareFunc", "OnClose", "OnEnter",
+    # pytest fixtures: camelCase, since the tests take them as parameters
+    "host", "utcLocal", "locks", "mouse", "keys", "overlay", "cleanStop", "rotation", "stageDB", "quiet", "quietLogger",
+    "_destroyParentlessFields", "englishLayout", "spanishLayout", "imgDir", "qolKeys", "tabClicks", "listClicks", "board",
+    "stageSelect", "lib"]
