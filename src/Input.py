@@ -51,7 +51,9 @@ _BRACE = re.compile(r"\{([^}]+|\})\}")
 _BRACE_BODY = re.compile(r"^(?P<name>.+?)(?:\s+(?P<arg>\S+))?$")
 _IGNORED_DIRECTIVES = {"blind"}
 
-_delays = {"key": 10, "press": -1, "mouse": 10}
+# "wheel" follows every notch so its scroll animation ends first: ZZZ merged notches 10 ms apart
+# and cut a notch short at 150 ms
+_delays = {"key": 10, "press": -1, "mouse": 10, "wheel": 250}
 # A_DefaultMouseSpeed: AHK starts at 2
 _mouseSpeed = {"default": 2}
 
@@ -150,8 +152,7 @@ def Send(keys: str) -> None:
 
 def _Perform(action: KeyAction) -> None:
     if action.key.vk in KeyCodes.WHEEL_VKS:
-        _SendInputs(_WheelInput(action.key.vk, 1))
-        _Delay("mouse")
+        _SendWheelNotches(action.key.vk, 1)
         return
     if action.key.isMouse:
         _PerformButton(action.key.vk, action.kind)
@@ -238,10 +239,16 @@ def _ButtonInput(vk: int, up: bool) -> api.INPUT:
     return event
 
 
-def _WheelInput(vk: int, notches: int) -> api.INPUT:
+def _SendWheelNotches(vk: int, notches: int) -> None:
+    for _ in range(notches):
+        _SendInputs(_WheelInput(vk))
+        _Delay("wheel")
+
+
+def _WheelInput(vk: int) -> api.INPUT:
     flag, sign = WHEEL_FLAGS[vk]
     event = api.INPUT(type=api.INPUT_MOUSE)
-    event.u.mi = api.MOUSEINPUT(0, 0, ctypes.c_uint32(sign * notches * WHEEL_DELTA).value, flag, 0, 0)
+    event.u.mi = api.MOUSEINPUT(0, 0, ctypes.c_uint32(sign * WHEEL_DELTA).value, flag, 0, 0)
     return event
 
 
@@ -308,7 +315,7 @@ def _StepTowards(current: int, target: int, divisor: int) -> int:
     return current + (step if (distance > 0) else -step)
 
 
-def MouseMove(x: int | float, y: int | float, speed: int | None = None) -> None:
+def MouseMove(x: float, y: float, speed: int | None = None) -> None:
     if speed is None:
         speed = _mouseSpeed["default"]
     originX, originY = _ClientOrigin()
@@ -328,8 +335,7 @@ def MouseClick(button: str = "left", x: int | None = None, y: int | None = None,
         MouseMove(x, y, speed)
     vk = KeyCodes.MOUSE_VKS[CLICK_BUTTONS.get(button.lower(), button.lower())]
     if vk in KeyCodes.WHEEL_VKS:
-        _SendInputs(_WheelInput(vk, count))
-        _Delay("mouse")
+        _SendWheelNotches(vk, count)
         return
     for _ in range(count):
         _PerformButton(vk, PRESS)
