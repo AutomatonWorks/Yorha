@@ -12,6 +12,7 @@ from yorha.Input import (
     Send,
     SetDefaultMouseSpeed,
     SetKeyDelay,
+    SetMouseCurvedMotion,
     SetMouseDelay,
 )
 from yorha.Process import (
@@ -83,7 +84,7 @@ __all__ = [
     "MonitorGet", "MonitorGetCount", "MonitorGetPrimary", "MonitorGetWorkArea", "MouseClick",
     "MouseEventMove", "MouseGetPos", "MouseMove", "ParseTimestamp", "ProcessClose", "ProcessExist",
     "ProcessStartTimeMs", "Random", "RelaunchOverlapped", "ReleaseHeldInputs", "WaitForReplacedProcess", "RelaunchAsAdmin", "RequestStop", "Run", "RunWait", "ScreenHeight",
-    "ScreenToClient", "ScreenWidth", "Send", "SetDefaultMouseSpeed", "SetKeyDelay", "SetMouseDelay", "SetPaused",
+    "ScreenToClient", "ScreenWidth", "Send", "SetDefaultMouseSpeed", "SetKeyDelay", "SetMouseCurvedMotion", "SetMouseDelay", "SetPaused",
     "SetSuspendExempt", "ClearMacroTimers", "SetTimer", "SetTimerOnOwnThread", "SetWinDelay", "Sleep", "Start", "Stop", "StopRequested", "Suspend",
     "Suspended", "TickCount", "ToolTip", "WaitEvent", "WinActivate", "WinActive", "WinExist", "WinGetClientPos",
     "WinGetMinMax", "WinGetPid", "WinGetPos", "WinGetStyle", "WinGetTitle", "WinMinimize", "WinMove",

@@ -1,7 +1,7 @@
 import pytest
 
 from yorha import Input as ahk_input
-from yorha.Input import DOWN, PRESS, UP, IncrementalPath, ParseSend
+from yorha.Input import DOWN, PRESS, UP, ParseSend
 from yorha.KeyCodes import GetKeyCode, KeyCode
 
 CTRL = 0x11
@@ -61,13 +61,6 @@ def test_KeyNameAliases():
     assert GetKeyCode("XButton2").isMouse
 
 
-def test_IncrementalPathEndsOnTargetAndNeverOvershoots():
-    path = IncrementalPath((0, 0), (300, -100), 10)
-    assert path[-1] == (300, -100)
-    assert all((0 <= x <= 300) and (-100 <= y <= 0) for x, y in path)
-    assert len(path) > 1
-
-
 def test_MouseMoveTruncatesFloatCoordinatesLikeAhk(monkeypatch):
     moves = []
     monkeypatch.setattr(ahk_input, "_ClientOrigin", lambda: (100, 50))
@@ -78,29 +71,69 @@ def test_MouseMoveTruncatesFloatCoordinatesLikeAhk(monkeypatch):
     assert all(isinstance(value, int) for value in moves[0])
 
 
-def _RecordMoves(monkeypatch) -> list:
+def _RecordMoves(monkeypatch, diagonal=1000.0) -> list:
     moves = []
+    clock = {"ms": 0.0}
+
+    def FakeSleep(ms):
+        clock["ms"] += ms
+
     monkeypatch.setattr(ahk_input, "_ClientOrigin", lambda: (0, 0))
     monkeypatch.setattr(ahk_input, "_ScreenCursor", lambda: (0, 0))
+    monkeypatch.setattr(ahk_input, "_WindowDiagonal", lambda: diagonal)
     monkeypatch.setattr(ahk_input, "_AbsoluteMove", lambda x, y: moves.append((x, y)))
     monkeypatch.setattr(ahk_input, "_Delay", lambda kind: None)
-    monkeypatch.setitem(ahk_input._mouseSpeed, "default", 2)
+    monkeypatch.setattr(ahk_input, "Sleep", FakeSleep)
+    monkeypatch.setattr(ahk_input, "_Now", lambda: clock["ms"] / 1000)
+    monkeypatch.setitem(ahk_input._mouseMotion, "speed", (2, 2))
+    monkeypatch.setitem(ahk_input._mouseMotion, "curve", (0, 0))
     return moves
 
 
-def test_MouseMoveWithoutSpeedUsesTheDefaultMouseSpeed(monkeypatch):
+def test_MouseMoveWithoutSpeedGlidesAtTheDefaultMouseSpeed(monkeypatch):
     moves = _RecordMoves(monkeypatch)
-    ahk_input.SetDefaultMouseSpeed(3)
+    ahk_input.SetDefaultMouseSpeed(60)
     ahk_input.MouseMove(900, 0)
-    assert moves == IncrementalPath((0, 0), (900, 0), 3)
-    assert len(moves) > 1
+    assert moves[-1] == (900, 0)
+    assert len(moves) > 10
+    assert all(0 <= x <= 900 for x, _y in moves)
+    assert [x for x, _y in moves] == sorted(x for x, _y in moves)
 
 
 def test_AnExplicitSpeedZeroStillJumps(monkeypatch):
     moves = _RecordMoves(monkeypatch)
-    ahk_input.SetDefaultMouseSpeed(3)
+    ahk_input.SetDefaultMouseSpeed(60)
     ahk_input.MouseMove(900, 0, 0)
     assert moves == [(900, 0)]
+
+
+def test_TheSameShareOfTheWindowTakesTheSameStepsAtAnyResolution(monkeypatch):
+    small = _RecordMoves(monkeypatch, diagonal=1000.0)
+    ahk_input.MouseMove(400, 300, 50)
+    large = _RecordMoves(monkeypatch, diagonal=4000.0)
+    ahk_input.MouseMove(1600, 1200, 50)
+    assert len(small) == len(large)
+
+
+def test_ACurvedMoveLeavesTheStraightLineAndStillEndsOnTarget(monkeypatch):
+    moves = _RecordMoves(monkeypatch)
+    ahk_input.SetMouseCurvedMotion(100)
+    ahk_input.MouseMove(900, 0, 60)
+    assert moves[-1] == (900, 0)
+    assert max(abs(y) for _x, y in moves) > 50
+
+
+def test_EveryMovePicksItsSpeedFromTheRangeBothEndsIncluded(monkeypatch):
+    _RecordMoves(monkeypatch)
+    ahk_input.SetDefaultMouseSpeed(40, 20)
+    picks = {ahk_input._Pick("speed") for _ in range(500)}
+    assert picks == set(range(20, 41))
+
+
+def test_ASingleValueAlwaysPicksThatValue(monkeypatch):
+    _RecordMoves(monkeypatch)
+    ahk_input.SetMouseCurvedMotion(30)
+    assert {ahk_input._Pick("curve") for _ in range(50)} == {30}
 
 
 def test_KeysAndButtonsLeftDownAreReleasedOnce(monkeypatch):

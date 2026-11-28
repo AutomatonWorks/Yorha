@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import ctypes
+import math
 import re
 import threading
+import time
 from ctypes import wintypes
 from dataclasses import dataclass
 
-from yorha import KeyCodes
+from yorha import KeyCodes, MouseMotion
 from yorha import Win32Api as api
 from yorha.KeyCodes import KeyCode
-from yorha.Timing import Sleep
+from yorha.Timing import Random, Sleep
 
 KEYEVENTF_EXTENDEDKEY = 0x0001
 KEYEVENTF_KEYUP = 0x0002
@@ -25,6 +27,8 @@ MOUSEEVENTF_HWHEEL = 0x1000
 WHEEL_DELTA = 120
 XBUTTON1 = 1
 XBUTTON2 = 2
+SM_CXSCREEN = 0
+SM_CYSCREEN = 1
 SM_XVIRTUALSCREEN = 76
 SM_YVIRTUALSCREEN = 77
 SM_CXVIRTUALSCREEN = 78
@@ -41,8 +45,8 @@ CLICK_BUTTONS = {"left": "lbutton", "l": "lbutton", "right": "rbutton", "r": "rb
                  "m": "mbutton", "x1": "xbutton1", "x2": "xbutton2", "wheelup": "wheelup", "wu": "wheelup",
                  "wheeldown": "wheeldown", "wd": "wheeldown", "wheelleft": "wheelleft", "wl": "wheelleft",
                  "wheelright": "wheelright", "wr": "wheelright"}
-INCREMENTAL_MOVE_MIN_STEP = 32
-MAX_MOUSE_SPEED = 100
+# How often a gliding MouseMove places the cursor; Windows' timer rounds it up to ~15 ms.
+GLIDE_FRAME_MS = 8
 
 PRESS = "press"
 DOWN = "down"
@@ -54,8 +58,11 @@ _IGNORED_DIRECTIVES = {"blind"}
 # "wheel" follows every notch so its scroll animation ends first: ZZZ merged notches 10 ms apart
 # and cut a notch short at 150 ms
 _delays = {"key": 10, "press": -1, "mouse": 10, "wheel": 250}
-# A_DefaultMouseSpeed: AHK starts at 2
-_mouseSpeed = {"default": 2}
+# (lowest, highest) picked from on every move, both included.
+# "speed" 0-100: 0 jumps, 100 crosses the window diagonal in MouseMotion.SLOWEST_FULL_MOVE_MS.
+# "curve" 0-100: 0 moves in a straight line, more bows the path to a random side.
+_mouseMotion = {"speed": (2, 2), "curve": (0, 0)}
+_Now = time.perf_counter
 
 
 @dataclass(frozen=True)
@@ -75,8 +82,23 @@ def SetMouseDelay(ms: int = 10) -> None:
     _delays["mouse"] = ms
 
 
-def SetDefaultMouseSpeed(speed: int) -> None:
-    _mouseSpeed["default"] = speed
+def SetDefaultMouseSpeed(highest: int, lowest: int | None = None) -> None:
+    _mouseMotion["speed"] = _Range(highest, lowest)
+
+
+def SetMouseCurvedMotion(highest: int, lowest: int | None = None) -> None:
+    _mouseMotion["curve"] = _Range(highest, lowest)
+
+
+def _Range(highest: int, lowest: int | None) -> tuple[int, int]:
+    if lowest is None:
+        return highest, highest
+    return min(highest, lowest), max(highest, lowest)
+
+
+def _Pick(setting: str) -> int:
+    lowest, highest = _mouseMotion[setting]
+    return Random(lowest, highest)
 
 
 def ParseSend(keys: str) -> list[KeyAction]:
@@ -295,38 +317,38 @@ def _AbsoluteMove(screenX: int, screenY: int) -> None:
     _SendInputs(event)
 
 
-def IncrementalPath(start: tuple[int, int], target: tuple[int, int], speed: int) -> list[tuple[int, int]]:
-    """The intermediate points of a MouseMove at `speed` (1-100), the target last."""
-    points = []
-    x, y = start
-    divisor = max(1, min(speed, MAX_MOUSE_SPEED))
-    while (x, y) != target:
-        x = _StepTowards(x, target[0], divisor)
-        y = _StepTowards(y, target[1], divisor)
-        points.append((x, y))
-    return points
-
-
-def _StepTowards(current: int, target: int, divisor: int) -> int:
-    distance = target - current
-    step = max(INCREMENTAL_MOVE_MIN_STEP, abs(distance) // divisor)
-    if abs(distance) <= step:
-        return target
-    return current + (step if (distance > 0) else -step)
+def _WindowDiagonal() -> float:
+    hwnd = api.GetForegroundWindow()
+    rect = wintypes.RECT()
+    if hwnd and api.GetClientRect(hwnd, ctypes.byref(rect)) and (rect.right > 0) and (rect.bottom > 0):
+        return math.hypot(rect.right, rect.bottom)
+    return math.hypot(api.GetSystemMetrics(SM_CXSCREEN), api.GetSystemMetrics(SM_CYSCREEN))
 
 
 def MouseMove(x: float, y: float, speed: int | None = None) -> None:
     if speed is None:
-        speed = _mouseSpeed["default"]
+        speed = _Pick("speed")
     originX, originY = _ClientOrigin()
     # AHK MouseMove truncates float coordinates (GetGameCenter() halves the client size).
     target = ((int(x) + originX), (int(y) + originY))
-    if speed > 0:
-        for point in IncrementalPath(_ScreenCursor(), target, speed)[:-1]:
-            _AbsoluteMove(*point)
-            _Delay("mouse")
+    start = _ScreenCursor()
+    durationMs = MouseMotion.DurationMs(start, target, speed, _WindowDiagonal())
+    if durationMs > 0:
+        _Glide(start, target, durationMs)
     _AbsoluteMove(*target)
     _Delay("mouse")
+
+
+def _Glide(start: tuple[int, int], target: tuple[int, int], durationMs: float) -> None:
+    control = MouseMotion.ControlPoint(start, target, _Pick("curve"))
+    began = _Now()
+    while True:
+        # Placed by the clock, not by a step count, so a late Sleep never slows the move down.
+        progress = ((_Now() - began) * 1000) / durationMs
+        if progress >= 1:
+            return
+        _AbsoluteMove(*MouseMotion.PointAt(start, control, target, progress))
+        Sleep(GLIDE_FRAME_MS)
 
 
 def MouseClick(button: str = "left", x: int | None = None, y: int | None = None, count: int = 1,
