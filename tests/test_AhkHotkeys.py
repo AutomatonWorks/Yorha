@@ -167,12 +167,13 @@ def test_SOptionKeepsAHotkeyWorkingWhileSuspendedAndClearDropsAll():
 
 
 def test_APressedHotkeyQueuesItsCallbackWithTheRegisteredName():
-    from yorha import Hotkeys
+    from yorha import Hotkeys, ThisHotkey
 
+    seen = []
     try:
-        Hotkeys.Hotkey("~Insert", lambda *_: None, "P10 T1")
-        Hotkeys._Decide(0x2D, True, False)
-        callback, name = Hotkeys._queue.get_nowait()
-        assert name == "~Insert"
+        Hotkeys.Hotkey("~Insert", lambda name: seen.append((name, ThisHotkey())), "P10 T1")
+        Hotkeys._Decide(0x2D, True, False, None)
+        Hotkeys._queue.get_nowait()()
+        assert seen == [("~Insert", "~Insert")]
     finally:
         Hotkeys.ClearHotkeys()

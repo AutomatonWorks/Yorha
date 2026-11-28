@@ -28,16 +28,10 @@ class HotkeySpec:
     onRelease: bool = False
 
     def MatchesKey(self, vk: int, extended: bool) -> bool:
-        return _KeyMatches(self.key, vk, extended)
+        return KeyCodes.Matches(self.key, vk, extended)
 
     def MatchesPrefix(self, vk: int) -> bool:
         return (self.prefix is not None) and (vk in KeyCodes.MatchingVks(self.prefix))
-
-
-def _KeyMatches(key: KeyCode, vk: int, extended: bool) -> bool:
-    if vk not in KeyCodes.MatchingVks(key):
-        return False
-    return (key.extended is None) or (key.extended == extended)
 
 
 def _Resolve(name: str, hotkey: str) -> KeyCode:
@@ -101,7 +95,12 @@ class HotkeyMatcher:
         self.enabled: set[str] = set()
         self.exempt: set[str] = set()
         self.suspended = False
+        # hotkey name -> input level (Hotkey option I<n>); generated input fires a hotkey only from a higher SendLevel
+        self.levels: dict[str, int] = {}
+        # every key down, physical or generated at a SendLevel (modifier matching), and the physical ones alone
         self.held: set[int] = set()
+        self.physicalHeld: set[int] = set()
+        self._eventLevel: int | None = None
         self._suppressedDown: set[int] = set()
         self._prefixes: dict[int, _PrefixState] = {}
         self._pendingRelease: dict[int, list[HotkeySpec]] = {}
@@ -113,19 +112,26 @@ class HotkeyMatcher:
 
     def _Active(self) -> list[HotkeySpec]:
         return [spec for name, spec in self.hotkeys.items()
-                if (name in self.enabled) and ((not self.suspended) or (name in self.exempt))]
+                if (name in self.enabled) and ((not self.suspended) or (name in self.exempt))
+                and ((self._eventLevel is None) or (self.levels.get(name, 0) < self._eventLevel))]
 
     def _Modifiers(self, excluding: int) -> set[str]:
         held = self.held - {excluding}
         return {symbol for symbol, vks in KeyCodes.MODIFIER_VKS.items() if held.intersection(vks)}
 
-    def event(self, vk: int, extended: bool, up: bool) -> Decision:
+    def event(self, vk: int, extended: bool, up: bool, level: int | None = None) -> Decision:
+        """`level` is the SendLevel of generated input, None for physical input."""
+        self._eventLevel = level
         if up:
+            if level is None:
+                self.physicalHeld.discard(vk)
             return self._KeyUp(vk)
         if vk in KeyCodes.WHEEL_VKS:
             return self._KeyDown(vk, extended, repeat=False)
         repeat = vk in self.held
         self.held.add(vk)
+        if level is None:
+            self.physicalHeld.add(vk)
         return self._KeyDown(vk, extended, repeat)
 
     def _KeyDown(self, vk: int, extended: bool, repeat: bool) -> Decision:
@@ -204,7 +210,7 @@ class HotkeyMatcher:
         return Decision(suppress=True, replay=state.key)
 
     def PhysicalDown(self, key: KeyCode) -> bool:
-        return bool(self.held.intersection(KeyCodes.MatchingVks(key)))
+        return bool(self.physicalHeld.intersection(KeyCodes.MatchingVks(key)))
 
 
 def _ModifiersMatch(spec: HotkeySpec, current: set[str]) -> bool:

@@ -112,6 +112,16 @@ MapVirtualKeyW = _Proto(user32, "MapVirtualKeyW", w.UINT, w.UINT, w.UINT)
 VkKeyScanW = _Proto(user32, "VkKeyScanW", w.SHORT, w.WCHAR)
 GetCursorPos = _Proto(user32, "GetCursorPos", w.BOOL, ctypes.POINTER(w.POINT))
 GetSystemMetrics = _Proto(user32, "GetSystemMetrics", ctypes.c_int, ctypes.c_int)
+GetLastInputInfo = _Proto(user32, "GetLastInputInfo", w.BOOL, ctypes.c_void_p)
+GetKeyboardLayout = _Proto(user32, "GetKeyboardLayout", w.HKL, w.DWORD)
+ToUnicodeEx = _Proto(user32, "ToUnicodeEx", ctypes.c_int, w.UINT, w.UINT, ctypes.POINTER(ctypes.c_ubyte), w.LPWSTR,
+                     ctypes.c_int, w.UINT, w.HKL)
+GetTickCount = _Proto(kernel32, "GetTickCount", w.DWORD)
+
+# Messages to windows that are not in front
+PostMessageW = _Proto(user32, "PostMessageW", w.BOOL, w.HWND, w.UINT, w.WPARAM, w.LPARAM)
+EnumChildWindows = _Proto(user32, "EnumChildWindows", w.BOOL, w.HWND, WNDENUMPROC, w.LPARAM)
+ChildWindowFromPointEx = _Proto(user32, "ChildWindowFromPointEx", w.HWND, w.HWND, w.POINT, w.UINT)
 
 # Windows
 GetForegroundWindow = _Proto(user32, "GetForegroundWindow", w.HWND)

@@ -1,19 +1,44 @@
 """AHK built-ins in Python: Sleep, Send, Click, Win*, Process*, Hotkey, SetTimer, ToolTip and co."""
 
+from yorha.Control import ControlClick, ControlSend, ControlSendText, SetControlDelay
+from yorha.Coordinates import CoordMode, CoordModeMouse, CoordModePixel
 from yorha.Errors import TargetError
+from yorha.HotkeyContext import (
+    PriorHotkey,
+    PriorKey,
+    ThisHotkey,
+    TimeIdle,
+    TimeIdleKeyboard,
+    TimeIdleMouse,
+    TimeIdlePhysical,
+    TimeSincePriorHotkey,
+    TimeSinceThisHotkey,
+)
 from yorha.Hotkeys import ClearHotkeys, HookDropped, Hotkey, SetSuspendExempt, Start, Stop, Suspend, Suspended
 from yorha.Input import (
-    GetKeyState,
+    ReleaseHeldInputs,
+    Send,
+    SendEvent,
+    SendInput,
+    SendLevel,
+    SendMode,
+    SendPlay,
+    SendText,
+    SetKeyDelay,
+    SetMouseDelay,
+)
+from yorha.InputCapture import InputHook
+from yorha.KeyCodes import GetKeyName, GetKeySC, GetKeyVK
+from yorha.KeyState import GetKeyState, KeyWait
+from yorha.Mouse import (
+    Click,
     MouseClick,
+    MouseClickDrag,
     MouseEventMove,
     MouseGetPos,
     MouseMove,
-    ReleaseHeldInputs,
-    Send,
     SetDefaultMouseSpeed,
-    SetKeyDelay,
     SetMouseCurvedMotion,
-    SetMouseDelay,
 )
 from yorha.Process import (
     IsAdmin,
@@ -89,4 +114,9 @@ __all__ = [
     "Suspended", "TickCount", "ToolTip", "WaitEvent", "WinActivate", "WinActive", "WinExist", "WinGetClientPos",
     "WinGetMinMax", "WinGetPid", "WinGetPos", "WinGetStyle", "WinGetTitle", "WinMinimize", "WinMove",
     "WinWaitActive",
+    "Click", "ControlClick", "ControlSend", "ControlSendText", "CoordMode", "CoordModeMouse", "CoordModePixel",
+    "GetKeyName", "GetKeySC", "GetKeyVK", "InputHook", "KeyWait", "MouseClickDrag", "PriorHotkey", "PriorKey",
+    "SendEvent", "SendInput", "SendLevel", "SendMode", "SendPlay", "SendText", "SetControlDelay", "ThisHotkey",
+    "TimeIdle", "TimeIdleKeyboard", "TimeIdleMouse", "TimeIdlePhysical", "TimeSincePriorHotkey",
+    "TimeSinceThisHotkey",
 ]

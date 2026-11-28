@@ -1,11 +1,20 @@
+import sys
+
 import pytest
 
 from yorha import Input as ahk_input
-from yorha.Input import DOWN, PRESS, UP, ParseSend
+from yorha import InputLevel
 from yorha.KeyCodes import GetKeyCode, KeyCode
+from yorha.SendParser import CLICK, DOWN, DOWN_REMEMBERED, DOWN_TEMP, PRESS, UP, BlindModifiers, ParseSend
 
 CTRL = 0x11
 SHIFT = 0x10
+LCTRL = 0xA2
+LSHIFT = 0xA0
+LALT = 0xA4
+ENTER = 0x0D
+MENU_MASK = 0xE8
+KEYEVENTF_KEYUP = 0x0002
 
 
 def _Summary(keys: str) -> list[tuple[int, str]]:
@@ -17,11 +26,11 @@ def test_NamedKeysAreCaseInsensitive():
 
 
 def test_ModifierSymbolWrapsOnlyTheNextKey():
-    assert _Summary("^ab") == [(CTRL, DOWN), (0x41, PRESS), (CTRL, UP), (0x42, PRESS)]
+    assert _Summary("^ab") == [(CTRL, DOWN_TEMP), (0x41, PRESS), (CTRL, UP), (0x42, PRESS)]
 
 
 def test_ModifiersWrapABraceKeyInReverseReleaseOrder():
-    assert _Summary("^+{Tab}") == [(CTRL, DOWN), (SHIFT, DOWN), (0x09, PRESS), (SHIFT, UP), (CTRL, UP)]
+    assert _Summary("^+{Tab}") == [(CTRL, DOWN_TEMP), (SHIFT, DOWN_TEMP), (0x09, PRESS), (SHIFT, UP), (CTRL, UP)]
 
 
 def test_DownUpAndRepeat():
@@ -29,8 +38,12 @@ def test_DownUpAndRepeat():
     assert _Summary("{Space 3}") == [(0x20, PRESS)] * 3
 
 
+def test_DownTempAndDownRAreTheirOwnKinds():
+    assert _Summary("{Shift DownTemp}{Ctrl DownR}") == [(SHIFT, DOWN_TEMP), (CTRL, DOWN_REMEMBERED)]
+
+
 def test_UppercaseLetterAddsShift():
-    assert _Summary("A") == [(SHIFT, DOWN), (0x41, PRESS), (SHIFT, UP)]
+    assert _Summary("A") == [(SHIFT, DOWN_TEMP), (0x41, PRESS), (SHIFT, UP)]
 
 
 def test_ExtendedFlagsFollowTheKey():
@@ -54,6 +67,34 @@ def test_BlindIsIgnoredAndUnknownNamesRaise():
         ParseSend("{NotAKey}")
 
 
+def test_BlindOnlyCountsAtTheStartAndNamesWhatItStillReleases():
+    assert BlindModifiers("{Blind}a") == ""
+    assert BlindModifiers("{Blind^+}a") == "^+"
+    assert BlindModifiers("a{Blind}") is None
+    assert _Summary("{Blind^}a") == [(0x41, PRESS)]
+
+
+def test_TextModeSendsCharactersAsUnicodeButLineBreaksAsEnter():
+    actions = ParseSend("x{Text}^a{b}\r\n\t")
+    assert [(action.key.vk, action.char) for action in actions] == [
+        (0x58, ""), (0, "^"), (0, "a"), (0, "{"), (0, "b"), (0, "}"), (ENTER, ""), (0x09, "")]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="needs the Windows keyboard layout")
+def test_RawModeKeepsSymbolsLiteralAndRawLineBreaksAreTwoEnters():
+    actions = ParseSend("{Raw}{a}\r\n")
+    vks = [action.key.vk for action in actions]
+    assert vks.count(0x41) == 1
+    assert vks.count(ENTER) == 2
+    assert CLICK not in [action.kind for action in actions]
+
+
+def test_ClickInsideSendCarriesItsOptions():
+    (click,) = ParseSend("{Click 100 200 Right}")
+    assert (click.kind, click.click) == (CLICK, "100 200 Right")
+    assert ParseSend("{Click}")[0].click == ""
+
+
 def test_KeyNameAliases():
     assert GetKeyCode("BS") == GetKeyCode("Backspace")
     assert GetKeyCode("Del").vk == 0x2E
@@ -61,89 +102,188 @@ def test_KeyNameAliases():
     assert GetKeyCode("XButton2").isMouse
 
 
-def test_MouseMoveTruncatesFloatCoordinatesLikeAhk(monkeypatch):
-    moves = []
-    monkeypatch.setattr(ahk_input, "_ClientOrigin", lambda: (100, 50))
-    monkeypatch.setattr(ahk_input, "_AbsoluteMove", lambda x, y: moves.append((x, y)))
-    monkeypatch.setattr(ahk_input, "_Delay", lambda kind: None)
-    ahk_input.MouseMove(960.5, 540.5, 0)
-    assert moves == [(1060, 590)]
-    assert all(isinstance(value, int) for value in moves[0])
+# ---- sending ----
 
 
-def _RecordMoves(monkeypatch, diagonal=1000.0) -> list:
-    moves = []
-    clock = {"ms": 0.0}
+class _Sent:
+    """Every SendInput call, as lists of (vk or char, up, extraInfo)."""
 
-    def FakeSleep(ms):
-        clock["ms"] += ms
+    def __init__(self) -> None:
+        self.calls: list[list[tuple[object, bool, int]]] = []
 
-    monkeypatch.setattr(ahk_input, "_ClientOrigin", lambda: (0, 0))
-    monkeypatch.setattr(ahk_input, "_ScreenCursor", lambda: (0, 0))
-    monkeypatch.setattr(ahk_input, "_WindowDiagonal", lambda: diagonal)
-    monkeypatch.setattr(ahk_input, "_AbsoluteMove", lambda x, y: moves.append((x, y)))
-    monkeypatch.setattr(ahk_input, "_Delay", lambda kind: None)
-    monkeypatch.setattr(ahk_input, "Sleep", FakeSleep)
-    monkeypatch.setattr(ahk_input, "_Now", lambda: clock["ms"] / 1000)
-    monkeypatch.setitem(ahk_input._mouseMotion, "speed", (2, 2))
-    monkeypatch.setitem(ahk_input._mouseMotion, "curve", (0, 0))
-    return moves
+    def __call__(self, *events) -> None:
+        self.calls.append([self._Describe(event) for event in events])
 
+    @staticmethod
+    def _Describe(event) -> tuple[object, bool, int]:
+        if event.type == 1:
+            key = event.u.ki
+            return (key.wVk or chr(key.wScan)), bool(key.dwFlags & KEYEVENTF_KEYUP), key.dwExtraInfo
+        mouse = event.u.mi
+        return f"mouse{mouse.dwFlags:#x}", False, mouse.dwExtraInfo
 
-def test_MouseMoveWithoutSpeedGlidesAtTheDefaultMouseSpeed(monkeypatch):
-    moves = _RecordMoves(monkeypatch)
-    ahk_input.SetDefaultMouseSpeed(60)
-    ahk_input.MouseMove(900, 0)
-    assert moves[-1] == (900, 0)
-    assert len(moves) > 10
-    assert all(0 <= x <= 900 for x, _y in moves)
-    assert [x for x, _y in moves] == sorted(x for x, _y in moves)
+    @property
+    def flat(self) -> list[tuple[object, bool]]:
+        return [(key, up) for call in self.calls for key, up, _extra in call]
 
 
-def test_AnExplicitSpeedZeroStillJumps(monkeypatch):
-    moves = _RecordMoves(monkeypatch)
-    ahk_input.SetDefaultMouseSpeed(60)
-    ahk_input.MouseMove(900, 0, 0)
-    assert moves == [(900, 0)]
-
-
-def test_TheSameShareOfTheWindowTakesTheSameStepsAtAnyResolution(monkeypatch):
-    small = _RecordMoves(monkeypatch, diagonal=1000.0)
-    ahk_input.MouseMove(400, 300, 50)
-    large = _RecordMoves(monkeypatch, diagonal=4000.0)
-    ahk_input.MouseMove(1600, 1200, 50)
-    assert len(small) == len(large)
-
-
-def test_ACurvedMoveLeavesTheStraightLineAndStillEndsOnTarget(monkeypatch):
-    moves = _RecordMoves(monkeypatch)
-    ahk_input.SetMouseCurvedMotion(100)
-    ahk_input.MouseMove(900, 0, 60)
-    assert moves[-1] == (900, 0)
-    assert max(abs(y) for _x, y in moves) > 50
-
-
-def test_EveryMovePicksItsSpeedFromTheRangeBothEndsIncluded(monkeypatch):
-    _RecordMoves(monkeypatch)
-    ahk_input.SetDefaultMouseSpeed(40, 20)
-    picks = {ahk_input._Pick("speed") for _ in range(500)}
-    assert picks == set(range(20, 41))
-
-
-def test_ASingleValueAlwaysPicksThatValue(monkeypatch):
-    _RecordMoves(monkeypatch)
-    ahk_input.SetMouseCurvedMotion(30)
-    assert {ahk_input._Pick("curve") for _ in range(50)} == {30}
-
-
-def test_KeysAndButtonsLeftDownAreReleasedOnce(monkeypatch):
-    sent = []
-    monkeypatch.setattr(ahk_input, "_SendInputs", lambda event: sent.append(event))
-    monkeypatch.setattr(ahk_input, "_Delay", lambda kind: None)
+@pytest.fixture
+def sent(monkeypatch):
+    recorder = _Sent()
+    monkeypatch.setattr(ahk_input, "Inject", recorder)
+    monkeypatch.setattr(ahk_input, "Delay", lambda kind: None)
     monkeypatch.setattr(ahk_input.KeyCodes, "ScanCode", lambda key: 0)
+    monkeypatch.setattr(ahk_input, "_LogicalModifiersDown", list)
+    monkeypatch.setattr(ahk_input, "_StillPhysicallyDown", lambda vk: True)
+    monkeypatch.setitem(ahk_input._settings, "mode", ahk_input.INPUT)
+    monkeypatch.setitem(ahk_input._settings, "level", 0)
     ahk_input.ReleaseHeldInputs()
+    recorder.calls.clear()
+    yield recorder
+    ahk_input.ReleaseHeldInputs()
+
+
+def test_SendInputGathersTheWholeStringIntoOneCall(sent):
+    ahk_input.SendInput("ab{Enter}")
+    assert len(sent.calls) == 1
+    assert sent.flat == [(0x41, False), (0x41, True), (0x42, False), (0x42, True), (ENTER, False), (ENTER, True)]
+
+
+def test_SendEventSendsEveryEventOnItsOwnWithTheKeyDelays(sent, monkeypatch):
+    delays = []
+    monkeypatch.setattr(ahk_input, "Delay", delays.append)
+    ahk_input.SendEvent("ab")
+    assert len(sent.calls) == 4
+    assert delays == ["press", "key", "press", "key"]
+
+
+def test_SendFollowsSendMode(sent):
+    ahk_input.SendMode("Event")
+    ahk_input.Send("ab")
+    assert len(sent.calls) == 4
+    ahk_input.SendMode("Play")
+    sent.calls.clear()
+    ahk_input.Send("ab")
+    assert len(sent.calls) == 1
+    with pytest.raises(ValueError):
+        ahk_input.SendMode("Fast")
+
+
+def test_SendTextTypesUnicodePackets(sent):
+    ahk_input.SendText("^ñ")
+    assert sent.flat == [("^", False), ("^", True), ("ñ", False), ("ñ", True)]
+
+
+def test_SetKeyDelayKeepsWhatIsOmitted(monkeypatch):
+    monkeypatch.setattr(ahk_input, "_delays", dict(ahk_input._delays))
+    ahk_input.SetKeyDelay(30, 5)
+    ahk_input.SetKeyDelay(40)
+    ahk_input.SetKeyDelay(None, 7)
+    ahk_input.SetKeyDelay(99, 99, "Play")
+    assert (ahk_input._delays["key"], ahk_input._delays["press"]) == (40, 7)
+
+
+def test_SendLevelMarksEveryEventTheAhkWay(sent):
+    ahk_input.SendLevel(3)
+    ahk_input.SendInput("a")
+    extras = [extra for _key, _up, extra in sent.calls[0]]
+    assert extras == [InputLevel.ExtraInfo(3)] * 2
+    assert InputLevel.LevelOf(extras[0]) == 3
+    assert InputLevel.LevelOf(InputLevel.ExtraInfo(0)) == 0
+    assert InputLevel.LevelOf(0) is None
+    with pytest.raises(ValueError):
+        ahk_input.SendLevel(101)
+
+
+def test_ModifierLiftsStayAtLevelZeroSoNoHotkeyReactsToThem(sent, monkeypatch):
+    monkeypatch.setattr(ahk_input, "_LogicalModifiersDown", lambda: [LCTRL])
+    ahk_input.SendLevel(3)
+    ahk_input.SendInput("a")
+    extras = [extra for _key, _up, extra in sent.calls[0]]
+    assert extras == [InputLevel.ExtraInfo(0), InputLevel.ExtraInfo(3), InputLevel.ExtraInfo(3),
+                      InputLevel.ExtraInfo(0)]
+
+
+def test_AHeldModifierIsLiftedAndRestoredAroundTheSend(sent, monkeypatch):
+    monkeypatch.setattr(ahk_input, "_LogicalModifiersDown", lambda: [LCTRL])
+    ahk_input.SendInput("a")
+    assert sent.flat == [(LCTRL, True), (0x41, False), (0x41, True), (LCTRL, False)]
+
+
+def test_ALiftedModifierTheUserLetGoOfStaysUp(sent, monkeypatch):
+    monkeypatch.setattr(ahk_input, "_LogicalModifiersDown", lambda: [LCTRL])
+    monkeypatch.setattr(ahk_input, "_StillPhysicallyDown", lambda vk: False)
+    ahk_input.SendInput("a")
+    assert sent.flat[-1] == (0x41, True)
+
+
+def test_LiftingAltTapsTheMenuMaskKeyFirst(sent, monkeypatch):
+    monkeypatch.setattr(ahk_input, "_LogicalModifiersDown", lambda: [LALT])
+    ahk_input.SendInput("a")
+    assert sent.flat[:3] == [(MENU_MASK, False), (MENU_MASK, True), (LALT, True)]
+
+
+def test_BlindLeavesHeldModifiersAloneUnlessNamed(sent, monkeypatch):
+    monkeypatch.setattr(ahk_input, "_LogicalModifiersDown", lambda: [LCTRL, LSHIFT])
+    ahk_input.SendInput("{Blind}a")
+    assert sent.flat == [(0x41, False), (0x41, True)]
+    sent.calls.clear()
+    ahk_input.SendInput("{Blind^}a")
+    assert sent.flat == [(LCTRL, True), (0x41, False), (0x41, True), (LCTRL, False)]
+
+
+def test_BlindDoesNotPressAModifierTheUserAlreadyHolds(sent, monkeypatch):
+    monkeypatch.setattr(ahk_input, "_LogicalModifiersDown", lambda: [LSHIFT])
+    ahk_input.SendInput("{Blind}+a")
+    assert sent.flat == [(0x41, False), (0x41, True)]
+
+
+def test_AModifierSentDownStaysDownThroughLaterSends(sent, monkeypatch):
+    ahk_input.SendInput("{Shift down}")
+    monkeypatch.setattr(ahk_input, "_LogicalModifiersDown", lambda: [LSHIFT])
+    sent.calls.clear()
+    ahk_input.SendInput("a")
+    assert sent.flat == [(0x41, False), (0x41, True)]
+
+
+def test_AShiftedKeyLeavesAShiftSentDownAlone(sent, monkeypatch):
+    ahk_input.SendInput("{Shift down}")
+    sent.calls.clear()
+    ahk_input.SendInput("A+b")
+    assert sent.flat == [(0x41, False), (0x41, True), (0x42, False), (0x42, True)]
+    sent.calls.clear()
+    ahk_input.SendInput("{Shift up}")
+    assert sent.flat == [(SHIFT, True)]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="needs the Windows keyboard layout")
+def test_ABracedShiftedCharacterKeepsItsShift():
+    actions = ParseSend("{$ 2}")
+    assert [action.wrapped for action in actions].count(True) == 4
+    assert [action.kind for action in ParseSend("{! down}") if not action.wrapped] == [DOWN]
+
+
+def test_AClickInsideSendEventFollowsEventMode(sent, monkeypatch):
+    from yorha import Mouse
+    modes = []
+    monkeypatch.setattr(Mouse, "_Press", lambda vk, count, kind, mode=None: modes.append(mode))
+    ahk_input.SendEvent("{Click}")
+    ahk_input.SendInput("{Click}")
+    assert modes == [ahk_input.EVENT, ahk_input.INPUT]
+
+
+def test_DownRIsLiftedForTheSendAndPutBack(sent, monkeypatch):
+    monkeypatch.setattr(ahk_input, "_StillPhysicallyDown", lambda vk: False)
+    ahk_input.SendInput("{Shift DownR}")
+    monkeypatch.setattr(ahk_input, "_LogicalModifiersDown", lambda: [LSHIFT])
+    sent.calls.clear()
+    ahk_input.SendInput("a")
+    assert sent.flat == [(LSHIFT, True), (0x41, False), (0x41, True), (LSHIFT, False)]
+
+
+def test_KeysAndButtonsLeftDownAreReleasedOnce(sent):
     ahk_input.Send("a{w down}{LButton down}")
-    sent.clear()
+    sent.calls.clear()
     assert ahk_input.ReleaseHeldInputs() == 2
-    assert len(sent) == 2
+    assert len(sent.flat) == 2
     assert ahk_input.ReleaseHeldInputs() == 0

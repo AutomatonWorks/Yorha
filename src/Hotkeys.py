@@ -4,6 +4,7 @@ that runs the callbacks."""
 from __future__ import annotations
 
 import ctypes
+import functools
 import logging
 import queue
 import sys
@@ -11,6 +12,7 @@ import threading
 from collections.abc import Callable
 from ctypes import wintypes
 
+from yorha import HotkeyContext, InputCapture, InputLevel, KeyCodes
 from yorha import Input as ahk_input
 from yorha import Win32Api as api
 from yorha.HotkeyMatcher import MENU_MASK_KEY, Decision, HotkeyMatcher, IsMouseHotkey, ParseHotkey
@@ -49,7 +51,7 @@ _lastEvent = [0]
 _matcher = HotkeyMatcher()
 _callbacks: dict[str, Callable[[str], object]] = {}
 _lock = threading.Lock()
-_queue: queue.Queue[tuple[Callable[[str], object], str] | None] = queue.Queue()
+_queue: queue.Queue[Callable[[], object] | None] = queue.Queue()
 _hook = {"thread": None, "thread_id": 0, "keyboard": None, "mouse": None, "dispatcher": None}
 _ready = threading.Event()
 
@@ -63,7 +65,8 @@ def _Key(name: str) -> str:
 
 def Hotkey(name: str, callback: Callable[[str], object] | None = None, options: str = "") -> None:
     """Hotkey(name, callback, options): registers or updates a hotkey; options "On"/"Off", "S" (keeps working
-    while suspended) and "S0" (P<n>/T<n> ignored). Without a callback it only switches an existing hotkey."""
+    while suspended), "S0" and "I<level>" (input level: generated input fires it only from a higher SendLevel;
+    P<n>/T<n> ignored). Without a callback it only switches an existing hotkey."""
     words = {word.lower() for word in options.split()}
     key = _Key(name)
     with _lock:
@@ -82,6 +85,9 @@ def Hotkey(name: str, callback: Callable[[str], object] | None = None, options: 
             _matcher.exempt.add(key)
         elif "s0" in words:
             _matcher.exempt.discard(key)
+        for word in words:
+            if (word[:1] == "i") and word[1:].isdigit():
+                _matcher.levels[key] = int(word[1:])
         needsMouse = IsMouseHotkey(_matcher.hotkeys[key])
     if needsMouse and _hook["thread_id"] and (_hook["mouse"] is None):
         api.PostThreadMessageW(_hook["thread_id"], WM_APP_INSTALL_MOUSE, 0, 0)
@@ -94,6 +100,7 @@ def ClearHotkeys() -> None:
         _matcher.hotkeys.clear()
         _matcher.enabled.clear()
         _matcher.exempt.clear()
+        _matcher.levels.clear()
         _matcher.ClearPending()
         _callbacks.clear()
 
@@ -118,8 +125,10 @@ def SetSuspendExempt(name: str, exempt: bool = True) -> None:
 
 
 def PhysicalKeyDown(key: KeyCode) -> bool | None:
-    """The physical state the hook tracked, or None when the hook is not running."""
+    """The physical state the hook tracked, or None when the hook that sees `key` is not running."""
     if _hook["keyboard"] is None:
+        return None
+    if key.isMouse and (_hook["mouse"] is None):
         return None
     with _lock:
         return _matcher.PhysicalDown(key)
@@ -128,14 +137,15 @@ def PhysicalKeyDown(key: KeyCode) -> bool | None:
 # ---- hook thread ----
 
 
-def _Decide(vk: int, extended: bool, up: bool) -> bool:
+def _Decide(vk: int, extended: bool, up: bool, level: int | None) -> bool:
     """Runs on the hook thread: must stay fast. Returns whether to hide the event."""
     with _lock:
-        decision: Decision = _matcher.event(vk, extended, up)
+        decision: Decision = _matcher.event(vk, extended, up, level)
         # decision.fire holds the hotkey names as registered (A_ThisHotkey); the tables are keyed by _key(name)
         callbacks = [(_callbacks[_Key(name)], name) for name in decision.fire]
+    pressedTick = _kernel32.GetTickCount()
     for callback, name in callbacks:
-        _queue.put((callback, name))
+        _queue.put(functools.partial(_RunHotkey, callback, name, pressedTick))
     if decision.mask:
         ahk_input.TapKey(MENU_MASK_KEY)
     if decision.replay is not None:
@@ -143,12 +153,32 @@ def _Decide(vk: int, extended: bool, up: bool) -> bool:
     return decision.suppress
 
 
+def _HotkeysSee(injected: bool, level: int | None) -> bool:
+    """Physical input, and AHK-style generated input above SendLevel 0; never other programs' generated input,
+    which also covers this package's own sends made without SendLevel."""
+    return (not injected) or ((level is not None) and (level > 0))
+
+
+def _OnKeyEvent(info: api.KBDLLHOOKSTRUCT, up: bool) -> bool:
+    extended = bool(info.flags & LLKHF_EXTENDED)
+    injected = (info.flags & LLKHF_INJECTED) != 0
+    level = InputLevel.LevelOf(info.dwExtraInfo) if injected else None
+    if level is None:
+        HotkeyContext.RecordKey(KeyCodes.KeyName(KeyCode(info.vkCode, 0, extended)), up)
+    if not injected:
+        HotkeyContext.RecordPhysical("keyboard")
+    if _HotkeysSee(injected, level) and _Decide(info.vkCode, extended, up, level):
+        return True
+    with _lock:
+        held = frozenset(_matcher.held)
+    return InputCapture.Feed(info.vkCode, info.scanCode, extended, up, level, held)
+
+
 def _KeyboardProc(code: int, wParam: int, lParam: int) -> int:
     if code == HC_ACTION:
         _lastEvent[0] = _kernel32.GetTickCount()
         info = api.KBDLLHOOKSTRUCT.from_address(lParam)
-        injected = (info.flags & LLKHF_INJECTED) != 0
-        if (not injected) and _Decide(info.vkCode, bool(info.flags & LLKHF_EXTENDED), wParam in KEY_UP_MESSAGES):
+        if _OnKeyEvent(info, wParam in KEY_UP_MESSAGES):
             return 1
     return api.CallNextHookEx(None, code, wParam, lParam)
 
@@ -167,12 +197,24 @@ def _MouseVk(wParam: int, info: api.MSLLHOOKSTRUCT) -> tuple[int, bool] | None:
     return None
 
 
+def _OnMouseEvent(wParam: int, info: api.MSLLHOOKSTRUCT) -> bool:
+    injected = (info.flags & LLMHF_INJECTED) != 0
+    level = InputLevel.LevelOf(info.dwExtraInfo) if injected else None
+    if not injected:
+        HotkeyContext.RecordPhysical("mouse")
+    event = _MouseVk(wParam, info)
+    if event is None:
+        return False
+    if level is None:
+        HotkeyContext.RecordKey(KeyCodes.KeyName(KeyCode(event[0])), event[1])
+    return _HotkeysSee(injected, level) and _Decide(event[0], False, event[1], level)
+
+
 def _MouseProc(code: int, wParam: int, lParam: int) -> int:
     if code == HC_ACTION:
         _lastEvent[0] = _kernel32.GetTickCount()
         info = api.MSLLHOOKSTRUCT.from_address(lParam)
-        event = None if (info.flags & LLMHF_INJECTED) else _MouseVk(wParam, info)
-        if (event is not None) and _Decide(event[0], False, event[1]):
+        if _OnMouseEvent(wParam, info):
             return 1
     return api.CallNextHookEx(None, code, wParam, lParam)
 
@@ -187,6 +229,7 @@ def _Install(kind: int) -> int:
     handle = api.SetWindowsHookExW(kind, proc, api.GetModuleHandleW(None), 0)
     if not handle:
         raise OSError(ctypes.get_last_error(), "SetWindowsHookEx failed")
+    HotkeyContext.HookInstalled("keyboard" if (kind == WH_KEYBOARD_LL) else "mouse", True)
     return handle
 
 
@@ -214,6 +257,7 @@ def _HookLoop() -> None:
             if _hook[kind] is not None:
                 api.UnhookWindowsHookEx(_hook[kind])
                 _hook[kind] = None
+                HotkeyContext.HookInstalled(kind, False)
         _hook["thread_id"] = 0
 
 
@@ -251,16 +295,30 @@ def HookDropped() -> bool:
 # ---- dispatcher ----
 
 
+def _RunHotkey(callback: Callable[[str], object], name: str, pressedTick: int) -> None:
+    HotkeyContext.HotkeyStarted(name, pressedTick)
+    try:
+        callback(name)
+    except Exception:
+        log.exception("Hotkey %s callback raised", name)
+    finally:
+        HotkeyContext.HotkeyFinished()
+
+
+def Dispatch(callback: Callable[[], object]) -> None:
+    """Runs `callback` on the hotkey dispatcher thread, after the callbacks already queued."""
+    _queue.put(callback)
+
+
 def _DispatchLoop() -> None:
     while True:
         item = _queue.get()
         if item is None:
             return
-        callback, name = item
         try:
-            callback(name)
+            item()
         except Exception:
-            log.exception("Hotkey %s callback raised", name)
+            log.exception("Dispatched callback raised")
 
 
 def Start() -> None:

@@ -81,7 +81,7 @@ def _WinDelay() -> None:
 
 
 def WinGetTitle(title: str | int) -> str:
-    return _WindowText(_Require(title))
+    return _WindowText(RequireWindow(title))
 
 
 def _WindowText(hwnd: int) -> str:
@@ -176,7 +176,7 @@ def _Find(title: str | int) -> int:
     return 0
 
 
-def _Require(title: str | int) -> int:
+def RequireWindow(title: str | int) -> int:
     hwnd = _Find(title)
     if not hwnd:
         raise TargetError(f"Target window not found: {title}")
@@ -202,7 +202,7 @@ def WinActive(title: str | int = "") -> int:
 
 
 def WinActivate(title: str | int = "") -> None:
-    hwnd = _Require(title)
+    hwnd = RequireWindow(title)
     _lastFound[0] = hwnd
     if api.IsIconic(hwnd):
         api.ShowWindow(hwnd, SW_RESTORE)
@@ -270,7 +270,7 @@ def ScreenToClient(hwnd: int, x: int, y: int) -> tuple[int, int]:
 
 def WinGetClientPos(title: str | int = "") -> tuple[int, int, int, int]:
     """(x, y, width, height) of the client area, x and y in screen coordinates."""
-    hwnd = _Require(title)
+    hwnd = RequireWindow(title)
     rect = wintypes.RECT()
     api.GetClientRect(hwnd, ctypes.byref(rect))
     x, y = ClientToScreen(hwnd, 0, 0)
@@ -278,7 +278,7 @@ def WinGetClientPos(title: str | int = "") -> tuple[int, int, int, int]:
 
 
 def WinGetPos(title: str | int = "") -> tuple[int, int, int, int]:
-    hwnd = _Require(title)
+    hwnd = RequireWindow(title)
     rect = wintypes.RECT()
     api.GetWindowRect(hwnd, ctypes.byref(rect))
     return rect.left, rect.top, (rect.right - rect.left), (rect.bottom - rect.top)
@@ -287,7 +287,7 @@ def WinGetPos(title: str | int = "") -> tuple[int, int, int, int]:
 def WinMove(x: int | None = None, y: int | None = None, width: int | None = None, height: int | None = None,
              title: str | int = "") -> None:
     """WinMove: a None argument keeps that part of the current position or size."""
-    hwnd = _Require(title)
+    hwnd = RequireWindow(title)
     current = WinGetPos(hwnd)
     wanted = [current[index] if (value is None) else value for index, value in enumerate((x, y, width, height))]
     api.MoveWindow(hwnd, wanted[0], wanted[1], wanted[2], wanted[3], True)
@@ -295,24 +295,24 @@ def WinMove(x: int | None = None, y: int | None = None, width: int | None = None
 
 
 def WinMinimize(title: str | int = "") -> None:
-    api.ShowWindow(_Require(title), SW_MINIMIZE)
+    api.ShowWindow(RequireWindow(title), SW_MINIMIZE)
     _WinDelay()
 
 
 def WinGetStyle(title: str | int = "") -> int:
-    return api.GetWindowLongPtrW(_Require(title), GWL_STYLE) & 0xFFFFFFFF
+    return api.GetWindowLongPtrW(RequireWindow(title), GWL_STYLE) & 0xFFFFFFFF
 
 
 def WinGetMinMax(title: str | int = "") -> int:
     """-1 minimized, 1 maximized, 0 neither."""
-    hwnd = _Require(title)
+    hwnd = RequireWindow(title)
     if api.IsIconic(hwnd):
         return -1
     return 1 if api.IsZoomed(hwnd) else 0
 
 
 def WinGetPid(title: str | int = "") -> int:
-    return _WindowPid(_Require(title))
+    return _WindowPid(RequireWindow(title))
 
 
 # ---- monitors ----
